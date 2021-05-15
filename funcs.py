@@ -51,7 +51,7 @@ def download_thumbnail(pixiv_id: str, url: str, pxy: str = ''):
                 r = requests.get(
                     url, proxies=custom_proxy,
                     headers=hds,
-                    timeout=4
+                    timeout=3
                 )
                 r.raise_for_status()
                 break
@@ -63,7 +63,7 @@ def download_thumbnail(pixiv_id: str, url: str, pxy: str = ''):
                 r = requests.get(
                     url,
                     headers=hds,
-                    timeout=4
+                    timeout=3
                 )
                 r.raise_for_status()
                 break

@@ -8,15 +8,17 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from PIL import Image
 from PIL import ImageTk
+from threading import Lock
 from tkinter import ttk
 from tkinter import messagebox as msg
 
 import funcs
 import classes
 
-LAST_UPDATE = '2021-4-29'
+LAST_UPDATE = '2021-5-8'
 SHORT_WAIT = 2000  # ms
-LONG_WAIT = 8000  # ms
+LONG_WAIT = 10000  # ms
+GLOBAL_LOCK = Lock()
 
 
 # Tk.state() normal: 普通 zoomed: 最大化
@@ -40,10 +42,10 @@ class App:
         self.db_num = 0
         self.db_num_new = 0
         self.auto_refresh = False
-        self.load_thumb_thread = classes.StoppableThread()
+        self.download_thumb_thread = classes.StoppableThread()
 
         self.search_keyword = None
-        self.current_page = 0
+        self.current_page = 1
         self.total_page = 0
 
         self.create_widget()
@@ -93,11 +95,20 @@ class App:
         )
 
     def refresh(self, _=0):
-        self.next_button.config(state='disabled')
-        self.previous_button.config(state='disabled')
         self.__get_total_page()
-        # print(f'There are {self.total_page:d} pages in total.')
-        if self.current_page > self.total_page:
+        if self.current_page < 2 and self.current_page >= self.total_page:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='disabled')
+        elif self.current_page < 2:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='enabled')
+        elif self.current_page >= self.total_page:
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='disabled')
+        else:
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='enabled')
+        if self.current_page > self.total_page and self.total_page > 0:
             self.get_works_from_db(
                 self.search_keyword,
                 self.total_page,
@@ -107,26 +118,10 @@ class App:
         else:
             self.get_works_from_db(
                 self.search_keyword,
-                self.current_page,
+                self.current_page if self.current_page>0 else 1,
                 self.database_content,
                 self.proxy
             )
-
-        def temp_func():
-            if self.load_thumb_thread.is_alive():
-                self.canvas.after(400, temp_func)
-            else:
-                self.next_button.config(state='enable')
-                self.previous_button.config(state='enable')
-                if self.current_page <= 1:
-                    self.previous_button.config(state='disabled')
-                elif self.current_page == self.total_page:
-                    self.next_button.config(state='disabled')
-                if self.current_page == 0:
-                    self.next_button.config(state='disabled')
-                    self.current_page = 1
-
-        self.canvas.after(100, temp_func)
 
     def clear_cache(self):
         try:
@@ -272,7 +267,7 @@ class App:
                 # setattr(self.labels[x][y], 'title', each[1])
                 try:
                     pic = Image.open(f'thumbs\\{each[0]:d}.jpg')
-                except OSError as e:
+                except OSError:
                     # print('\n ', type(e), e)
                     pic = Image.open('empty.jpg')
                     # _thread.start_new_thread(
@@ -310,7 +305,8 @@ class App:
         search_keyword = self.search_keyword
         search_keyword = search_keyword.replace('(', '_')
         search_keyword = search_keyword.replace(')', '')
-        search_keyword = search_keyword.replace(' ', '-')
+        search_keyword = search_keyword.replace(' ', '_')
+        search_keyword = search_keyword.replace('-', '_')
         try:
             cursor.execute(f'CREATE TABLE {search_keyword:s} ('
                            f'    pixiv_id INT NOT NULL UNIQUE PRIMARY KEY,\n'
@@ -352,18 +348,14 @@ class App:
             if self.auto_refresh:
                 search_keyword = self.search_keyword.replace('(', '_')
                 search_keyword = search_keyword.replace(')', '')
-                search_keyword = search_keyword.replace(' ', '-')
-                try:
-                    self.db_num_new = [x for x in self.cur.execute(
-                        f'SELECT COUNT(*)'
-                        f'  FROM {search_keyword:s}'
-                    )][0][0]
-                except sqlite3.OperationalError:
-                    print(f'Refreshing keyword {self.search_keyword} has been stopped.')
-                    return 0
-                # print(self.db_num, self.db_num_new)
-                if self.db_num_new != self.db_num:
-                    self.refresh()
+                search_keyword = search_keyword.replace(' ', '_')
+                search_keyword = search_keyword.replace('-', '_')
+                self.db_num_new = [x for x in self.cur.execute(
+                    f'SELECT COUNT(*)'
+                    f'  FROM {search_keyword:s}'
+                )][0][0]
+                if (self.db_num_new != self.db_num) and (not GLOBAL_LOCK.locked()):
+                    self.refresh(False)
                     self.db_num = self.db_num_new
                     self.canvas.after(LONG_WAIT, self.refresh_by_db)
                 else:
@@ -378,30 +370,114 @@ class App:
         if use:
             self.canvas.after(100, self.refresh_by_db)
 
-    def load_loop(self, select_result: list = None):
-        self.previous_button.config(state='disabled')
+    def go_to_page(self, page):
         self.next_button.config(state='disabled')
-        self.load_pics_to_gui(select_result)
-        if self.load_thumb_thread.is_alive():
-            self.solve = self.canvas.after(
-                600, lambda x=0: self.load_loop(select_result)
-            )
+        self.previous_button.config(state='disabled')
+        self.__get_total_page()
+
+        self.current_page = self.total_page if page > self.total_page else page
+        if self.current_page < 1:
+            self.current_page = 1
+
+        self.__get_total_page()
+        # f'0/0 [mode={self.show_R18:d}]'
+        if self.current_page < 2 and self.current_page >= self.total_page:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='disabled')
+        elif self.current_page < 2:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='enabled')
+        elif self.current_page >= self.total_page:
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='disabled')
         else:
-            self.load_pics_to_gui(select_result)
-            self.progress['value'] = 60
-            self.next_button.config(state='enable')
-            self.previous_button.config(state='enable')
-            if self.current_page <= 1:
-                self.previous_button.config(state='disabled')
-            elif self.current_page == self.total_page:
-                self.next_button.config(state='disabled')
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='enabled')
+        self.page_indicator.config(
+            text=f'{self.current_page:d}/{self.total_page:d} [mode={self.show_R18:d}]'
+        )
+
+        search_keyword = self.search_keyword.replace('(', '_')
+        search_keyword = search_keyword.replace(')', '')
+        search_keyword = search_keyword.replace(' ', '_')
+        search_keyword = search_keyword.replace('-', '_')
+        targets = []
+        if self.show_R18 == 0:
+            # The result of selection is as follow:
+            # [(pixiv_id, title, thumb_url, like_num, is_R18)]
+            targets = self.cur.execute(
+                f'SELECT * '
+                f'  FROM {search_keyword:s} '
+                f' WHERE is_R18=0 '
+                f' ORDER BY like_num DESC '
+                f'LIMIT {(page-1) * 60:d}, 60 '
+            )
+        elif self.show_R18 == 1:
+            targets = self.cur.execute(
+                f'SELECT * '
+                f'  FROM {search_keyword:s} '
+                f' ORDER BY like_num DESC '
+                f'LIMIT {(page-1) * 60:d}, 60 '
+            )
+        elif self.show_R18 == 2:
+            targets = self.cur.execute(
+                f'SELECT * '
+                f'  FROM {search_keyword:s} '
+                f' WHERE is_R18=1 '
+                f' ORDER BY like_num DESC '
+                f'LIMIT {(page-1) * 60:d}, 60 '
+            )
+        pics = [x for x in targets]
+
+        if not pics:
+            return None
+
+        # TODO
+        self.previous_button.config(
+            command=lambda x=0: self.go_to_page(page - 1)
+        )
+        self.next_button.config(
+            command=lambda x=0: self.go_to_page(page + 1)
+        )
+        self.progress['maximum'] = 60
+        self.progress['value'] = 0
+
+        def temp_func():
+            flush_key = True
+            page_before_start = self.current_page
+            GLOBAL_LOCK.acquire()
+            with ThreadPoolExecutor(max_workers=16) as p:
+                tasks = [p.submit(
+                    funcs.download_thumbnail,
+                    each[0], each[2], self.proxy
+                ) for each in pics]
+                i = 0
+                # 在这个for阻塞了
+                for _ in as_completed(tasks):
+                    i += 1
+                    self.progress['value'] = i
+                    self.progress.update()
+                    if not i % 15:
+                        if page_before_start == self.current_page:
+                            self.load_pics_to_gui(pics)
+                        else:
+                            flush_key = False
+                            if GLOBAL_LOCK.locked():
+                                GLOBAL_LOCK.release()
+            if flush_key:
+                self.progress['value'] = 60
+                self.load_pics_to_gui(pics)
+                if GLOBAL_LOCK.locked():
+                    GLOBAL_LOCK.release()
+
+        self.download_thumb_thread = classes.StoppableThread(temp_func)
+        self.download_thumb_thread.start()
 
     def get_works_from_db(
             self, search_keyword: str = '',
             page: int = 1,
             database_content: sqlite3.Connection = None,
             proxy: str = ''):
-        # self.load_pics_to_gui()
         if not search_keyword:
             print('Empty search keyword!')
             return None
@@ -409,106 +485,102 @@ class App:
             print('Empty database connection!')
             return None
 
-        # self.previous_button.config(state='disabled')
-        # self.next_button.config(state='disabled')
-
         self.search_keyword = search_keyword
         self.current_page = page
         self.proxy = proxy
         self.database_content = database_content
         self.cur = database_content.cursor()
-        cursor = database_content.cursor()
 
         self.__get_total_page()
         # f'0/0 [mode={self.show_R18:d}]'
+        if page < 2 and page >= self.total_page:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='disabled')
+        elif page < 2:
+            self.previous_button.config(state='disabled')
+            self.next_button.config(state='enabled')
+        elif page >= self.total_page:
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='disabled')
+        else:
+            self.previous_button.config(state='enabled')
+            self.next_button.config(state='enabled')
         self.page_indicator.config(text=f'{page:d}/{self.total_page:d} [mode={self.show_R18:d}]')
 
         search_keyword = search_keyword.replace('(', '_')
         search_keyword = search_keyword.replace(')', '')
-        search_keyword = search_keyword.replace(' ', '-')
+        search_keyword = search_keyword.replace(' ', '_')
+        search_keyword = search_keyword.replace('-', '_')
 
         targets = []
         if self.show_R18 == 0:
             # The result of selection is as follow:
             # [(pixiv_id, title, thumb_url, like_num, is_R18)]
-            targets = cursor.execute(
+            targets = self.cur.execute(
                 f'SELECT * '
                 f'  FROM {search_keyword:s} '
                 f' WHERE is_R18=0 '
                 f' ORDER BY like_num DESC '
-                f'LIMIT {page * 60 - 59:d}, 60 '
+                f'LIMIT {(page-1) * 60:d}, 60 '
             )
         elif self.show_R18 == 1:
-            targets = cursor.execute(
+            targets = self.cur.execute(
                 f'SELECT * '
                 f'  FROM {search_keyword:s} '
                 f' ORDER BY like_num DESC '
-                f'LIMIT {page * 60 - 59:d}, 60 '
+                f'LIMIT {(page-1) * 60:d}, 60 '
             )
         elif self.show_R18 == 2:
-            targets = cursor.execute(
+            targets = self.cur.execute(
                 f'SELECT * '
                 f'  FROM {search_keyword:s} '
                 f' WHERE is_R18=1 '
                 f' ORDER BY like_num DESC '
-                f'LIMIT {page * 60 - 59:d}, 60 '
+                f'LIMIT {(page-1) * 60:d}, 60 '
             )
         pics = [x for x in targets]
         if not pics:
             return None
-        tasks = []
-        tasks_add = tasks.append
+
+        # TODO
+        self.previous_button.config(
+            command=lambda x=0: self.go_to_page(page - 1)
+        )
+        self.next_button.config(
+            command=lambda x=0: self.go_to_page(page + 1)
+        )
         self.progress['maximum'] = 60
         self.progress['value'] = 0
 
-        self.solve = self.canvas.after(100, lambda x=0: self.load_loop(pics))
-
-        self.previous_button.config(
-            command=lambda x=0: self.get_works_from_db(
-                search_keyword, page - 1,
-                database_content, proxy
-            )
-        )
-        self.next_button.config(
-            command=lambda x=0: self.get_works_from_db(
-                search_keyword, page + 1,
-                database_content, proxy
-            )
-        )
-        # self.win.update()
-
         def temp_func():
+            GLOBAL_LOCK.acquire()
             with ThreadPoolExecutor(max_workers=16) as p:
                 if proxy:
-                    for each in pics:
-                        # print(each)
-                        tasks_add(p.submit(
-                            funcs.download_thumbnail,
-                            each[0], each[2],
-                            proxy
-                        ))
+                    tasks = [p.submit(
+                        funcs.download_thumbnail,
+                        each[0], each[2], proxy
+                    ) for each in pics]
                 else:
-                    for each in pics:
-                        # print(each)
-                        tasks_add(p.submit(
-                            funcs.download_thumbnail,
-                            each[0], each[2],
-                        ))
+                    tasks = [p.submit(
+                        funcs.download_thumbnail,
+                        each[0], each[2]
+                    ) for each in pics]
                 i = 0
                 # 在这个for阻塞了
                 for _ in as_completed(tasks):
-                    self.progress.update()
                     i += 1
                     self.progress['value'] = i
                     self.progress.update()
+                    if not i % 15:
+                        self.load_pics_to_gui(pics)
+            self.progress['value'] = 60
+            self.load_pics_to_gui(pics)
+            if GLOBAL_LOCK.locked():
+                GLOBAL_LOCK.release()
 
-        self.load_thumb_thread = classes.StoppableThread(temp_func, ())
-        self.load_thumb_thread.start()
+        self.download_thumb_thread = classes.StoppableThread(temp_func)
+        self.download_thumb_thread.start()
 
     # 调用Tk()的mainloop
     def mainloop(self):
         self.win.mainloop()
-
-    def __del__(self):
-        if self.database_content:
-            self.database_content.close()

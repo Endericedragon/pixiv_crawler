@@ -100,7 +100,7 @@ class PixivLoginPage:
                 un_elem.send_keys(Keys.RETURN)
                 WebDriverWait(self.driver, WAIT_TIME).until(
                     ec.presence_of_element_located(
-                        (By.XPATH, r'''//h2[@class="sc-7zddlj-3 fYqSRp"]''')))
+                        (By.XPATH, r'''//div[@id="root"]''')))
                 break
             except selenium.common.exceptions.TimeoutException:
                 print(f'Retrying login...{i:d}...')
@@ -250,7 +250,8 @@ class PixivMobilePage:
         cur = content.cursor()
         search_keyword = search_keyword.replace('(', '_')
         search_keyword = search_keyword.replace(')', '')
-        search_keyword = search_keyword.replace(' ', '-')
+        search_keyword = search_keyword.replace(' ', '_')
+        search_keyword = search_keyword.replace('-', '_')
         try:
             cur.execute(f'CREATE TABLE {search_keyword:s} ('
                         f'    pixiv_id INT NOT NULL UNIQUE PRIMARY KEY,\n'
@@ -309,8 +310,9 @@ class PixivMobilePage:
             print(f'Parsing page {a}/{self.total_page} Successfully.', flush=True)
             self.write_to_storage(self.search_keyword, artworks)
             if self.total_page == a:
-                time.sleep(1)
+                time.sleep(4)
                 print(f'All pages of {self.search_keyword} has been parsed.')
+                funcs.config_settings(self.search_keyword, a + 1 if a < self.total_page else 1)
             if not a%4:
                 funcs.config_settings(self.search_keyword, a + 1 if a < self.total_page else 1)
 
@@ -322,16 +324,11 @@ class PixivMobilePage:
             _to = self.total_page
 
         def show_progress(a, b):
-            with ThreadPoolExecutor(max_workers=8) as tp:
+            with ThreadPoolExecutor(max_workers=12) as tp:
                 tasks = []
                 task_add = tasks.append
                 while a <= b:
                     task_add(tp.submit(temp_func, a))
                     a += 1
-                # for _ in as_completed(tasks):
-                #     if not self.go_ahead:
-                #         tp._threads.clear()
-                #         concurrent.futures.thread._threads_queues.clear()
-                #         return None
         self.search_thread = StoppableThread(show_progress, (_from, _to))
         self.search_thread.start()
